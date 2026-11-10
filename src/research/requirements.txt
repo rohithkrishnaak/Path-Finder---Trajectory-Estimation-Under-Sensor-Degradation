@@ -1,0 +1,5 @@
+# Research / evaluation tooling (Python 3.11+). The runtime itself (C++) needs none of this.
+numpy>=1.26
+scipy>=1.11
+evo>=1.28          # official-style trajectory evaluation (cross-check of eval/score.py)
+torch>=2.2         # learned components (velocity network, forecaster) - from day 2

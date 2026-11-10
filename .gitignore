@@ -1,0 +1,18 @@
+# data & outputs (never commit datasets)
+data/
+out/
+build/
+*.zip
+!src/tests/fixtures/*.zip
+estimated_trajectory_*.txt
+# organizer slides
+*.pdf
+# python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+# binaries
+src/pathfinder
+src/pathfinder.exe
+*.o
