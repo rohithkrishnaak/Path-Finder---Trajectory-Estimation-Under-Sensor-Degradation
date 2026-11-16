@@ -12,7 +12,9 @@ __pycache__/
 *.pyc
 .venv/
 .ipynb_checkpoints/
-# binaries
-src/pathfinder
-src/pathfinder.exe
+# binaries (archived C++ runtime)
+archive/cpp_runtime/pathfinder
+archive/cpp_runtime/pathfinder.exe
 *.o
+# experiment weights (shipped model is src/weights/vel.bin)
+/weights/

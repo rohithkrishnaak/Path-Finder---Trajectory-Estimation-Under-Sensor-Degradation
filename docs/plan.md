@@ -1,5 +1,15 @@
 # Track 3: Path Finder (IMU-only 6-DoF trajectory under sensor degradation). Implementation plan
 
+> **Update 2026-11-16 (official Track 3 FAQ + `degrade_imu.py`).** This changes several parts of the plan below; `devlog.md` D-030 to D-035 has the details.
+> - **Python only.** Submit a standalone `main.py`. The C++ runtime (§3, §4) is archived in `archive/cpp_runtime/`, and `src/main.py` is a numpy port of it.
+> - **The 8 MB is measured at the algorithm / heap level**, not process RSS. Measured: 3.47 MB peak heap, 6.1 ms per IMU-second.
+> - **Never append poses.** The blind 5 s rows are in the input, with zeroed values.
+> - **Dropouts are missing rows**: frequent and short (≤ 0.25 s with the official script), plus stuck and duplicated rows. Short gaps are now bridged by interpolating the IMU (D-033).
+> - **Evaluation:** evo with SE(3) Umeyama alignment. Waypoints are hidden.
+> - **Offline batch smoothing is allowed** (the whole CSV may be held in memory within 8 MB).
+> - **Deadline: 22 Nov 2026.** Video 2-3 min, strict maximum 3 min.
+> - **Test data:** `src/research/make_official.py` runs the official script (seed 42) over EuRoC. Our own `degrade.py` is kept only for augmentation ideas.
+
 ## Context
 Samsung PRISM XR Hackathon 2026, Track 3. We get a degraded EuRoC-format IMU CSV with progressive noise, bias drift, dropouts of about 2 s, unknown gravity alignment, and finally a complete IMU failure. We must output a 6-DoF trajectory with **exactly one pose per IMU frame**, plus a 5 s dead-reckoned path after the failure.
 - **Team:** 2 people. **Today:** Tue 10 Nov 2026. **Hard deadline:** 18 Nov 23:59 (no extensions). Our internal submit target is 18 Nov 18:00.

@@ -8,11 +8,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 #include "eskf.hpp"
 #include "ingest.hpp"
+#include "nn.hpp"
 #include "params.hpp"
 
 namespace pf {
@@ -148,7 +150,7 @@ inline Vec3 mean_of(const std::vector<T>& v) {
 }
 
 inline bool run(const std::string& in_path, const std::string& out_path, const Params& P, BlindMode mode,
-                RunStats& st, std::string& err) {
+                RunStats& st, std::string& err, const VelNet* net = nullptr) {
     ScanResult sc;
     if (!scan(in_path, P, sc, err)) return false;
     st.rows = sc.n;
@@ -175,6 +177,10 @@ inline bool run(const std::string& in_path, const std::string& out_path, const P
     win_g.reserve(P.static_win + 1);
     win_a.reserve(P.static_win + 1);
     long long static_count = 0;
+    // learned-velocity window: 50 blocks of 4 samples, features [a*SA, g*SG, gravity-in-body]
+    std::vector<float> nn_blocks((size_t)NN_T * NN_F, 0.f);
+    int nn_nb = 0, nn_ns = 0, nn_since = 0;
+    double nn_acc[NN_F] = {0};
     Vec3 good_p = f.p, good_v = f.v;
     Vec4 good_q = f.q;
     const int64_t n = sc.n;
@@ -233,12 +239,42 @@ inline bool run(const std::string& in_path, const std::string& out_path, const P
                     w_gap = w_gap * std::exp(-dt / P.tau_w_gap);
                     f.propagate_gap(w_gap, dt, P.tau_v_gap, P.sig_v_gap, P.sig_th_gap);
                     if (valid) { in_gap = false; win_g.clear(); win_a.clear(); static_count = 0; }
+                    nn_nb = 0; nn_ns = 0; nn_since = 0; for (double& x : nn_acc) x = 0;
                 }
                 if (valid) {
                     last_g = g1; last_a = a1; has_last = true;
                     w_hist.push_back(g1 - f.bg);
                     if (w_hist.size() > w_hist_n) w_hist.erase(w_hist.begin());
                     if (P.sig_vprior > 0 && i % P.vprior_every == 0) f.update_velocity_zero(P.sig_vprior, true);
+                    if (net && net->ok && !in_gap) {
+                        const Mat3 Rn = quat_to_rot(f.q);
+                        const Vec3 gb = Rn.row(2).transpose();
+                        const double feat[NN_F] = {a1[0] * NN_SA, a1[1] * NN_SA, a1[2] * NN_SA, g1[0] * NN_SG, g1[1] * NN_SG,
+                                                   g1[2] * NN_SG, gb[0], gb[1], gb[2]};
+                        for (int k = 0; k < NN_F; ++k) nn_acc[k] += feat[k];
+                        if (++nn_ns == 4) {
+                            nn_ns = 0;
+                            if (nn_nb == NN_T) std::copy(nn_blocks.begin() + NN_F, nn_blocks.end(), nn_blocks.begin());
+                            else ++nn_nb;
+                            for (int k = 0; k < NN_F; ++k) { nn_blocks[(size_t)(nn_nb - 1) * NN_F + k] = float(nn_acc[k] / 4.0); nn_acc[k] = 0; }
+                            if (nn_nb == NN_T && ++nn_since >= P.nn_every_blocks) {
+                                nn_since = 0;
+                                float out[NN_OUT];
+                                net->forward(nn_blocks.data(), out);
+                                const Vec3 vb(out[0], out[1], out[2]);
+                                if (vb.norm() < P.nn_vmax) {
+                                    const double var = (std::exp(out[3]) + std::exp(out[4]) + std::exp(out[5])) / 3.0;
+                                    const double infl = std::pow(std::max(1.0, std::sqrt(var_a) / P.sig_a), P.nn_noise_pow);
+                                    const double sig = std::max(P.nn_sig_floor, P.nn_sig_scale * std::sqrt(var)) * infl;
+                                    const Vec3 vw = Rn * vb;
+                                    Mat3x15 H = Mat3x15::Zero();
+                                    H.block<3, 3>(0, IV) = Mat3::Identity();
+                                    if (P.nn_full) f.update(H, vw - f.v, sig);
+                                    else f.update(H, vw - f.v, sig, IV, IV + 3);
+                                }
+                            }
+                        }
+                    }
                     win_g.push_back(g1); win_a.push_back(a1);
                     if ((int)win_g.size() > P.static_win) { win_g.erase(win_g.begin()); win_a.erase(win_a.begin()); }
                     if ((int)win_g.size() == P.static_win) {

@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import sys
 import zipfile
 from dataclasses import dataclass
 
@@ -241,3 +242,51 @@ def find_gt_csv(seq_dir: str) -> str:
             if os.path.basename(root) == sub and "data.csv" in files:
                 return os.path.join(root, "data.csv")
     raise FileNotFoundError(f"no ground truth under {seq_dir}")
+
+
+def slerp_quats(t_src, q_src, t):
+    """Slerp of wxyz unit quaternions sampled at t_src, evaluated at t (t inside the span)."""
+    i = np.clip(np.searchsorted(t_src, t, side="right") - 1, 0, len(t_src) - 2)
+    u = ((t - t_src[i]) / np.maximum(t_src[i + 1] - t_src[i], 1e-12))[:, None]
+    q0, q1 = q_src[i], q_src[i + 1].copy()
+    d = np.sum(q0 * q1, axis=1)
+    q1[d < 0] *= -1
+    d = np.abs(d)[:, None]
+    th = np.arccos(np.clip(d, -1.0, 1.0))
+    s = np.sin(th)
+    small = s < 1e-9
+    w0 = np.where(small, 1.0 - u, np.sin((1.0 - u) * th) / np.where(small, 1.0, s))
+    w1 = np.where(small, u, np.sin(u * th) / np.where(small, 1.0, s))
+    q = w0 * q0 + w1 * q1
+    return q / np.linalg.norm(q, axis=1, keepdims=True)
+
+
+def interp_traj(gt: Traj, t):
+    """Ground truth at times t (s): (mask of t inside the GT span, positions (M,3), wxyz quaternions (M,4))."""
+    m = (t >= gt.t[0]) & (t <= gt.t[-1])
+    tm = t[m]
+    pos = np.column_stack([np.interp(tm, gt.t, gt.p[:, i]) for i in range(3)])
+    return m, pos, slerp_quats(gt.t, gt.q, tm)
+
+
+OFFICIAL_COLS = ("timestamp", "c1", "c2", "c3", "c4", "c5", "c6")
+
+
+def official_degrade(t_ns, gyro, acc, order="script", seed=None, max_level=None, gamma=None, cols=OFFICIAL_COLS):
+    """Run the organisers' degrade_imu.degrade() (unmodified) on one stream. Returns (DataFrame, stats).
+
+    order="script": columns t, accel, gyro (the layout degrade_imu.py documents).
+    order="euroc":  columns t, gyro, accel (a raw EuRoC file fed straight in: the script then puts its
+                    accelerometer noise on the gyro columns). The output keeps the input column order."""
+    import pandas as pd
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "official"))
+    import degrade_imu
+    vals = np.column_stack([acc, gyro]) if order == "script" else np.column_stack([gyro, acc])
+    df = pd.DataFrame(vals, columns=list(cols[1:]))
+    df.insert(0, cols[0], np.asarray(t_ns, dtype=np.int64))
+    cfg = dict(degrade_imu.CONFIG)
+    if max_level is not None:
+        cfg["max_level"] = max_level
+    if gamma is not None:
+        cfg["gamma"] = gamma
+    return degrade_imu.degrade(df, cfg, degrade_imu.SEED if seed is None else seed)

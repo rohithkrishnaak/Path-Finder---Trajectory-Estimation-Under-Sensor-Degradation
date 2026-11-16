@@ -1,0 +1,69 @@
+================================================================================
+TRACK 03: PATH FINDER - OFFICIAL FAQ & CLARIFICATIONS
+================================================================================
+
+Thank you to all teams for reaching out. We have compiled your queries regarding 
+Track 3 into this official FAQ. 
+
+1. MISSING MATERIALS & DEGRADATION SCRIPT
+--------------------------------------------------------------------------------
+Q: Will a Track 3 student package be provided?
+A: Yes, the Track 3 Student Package is being distributed. Crucially, this 
+includes the official degradation script (`degrade_imu.py`) which allows you to 
+generate your own sample datasets with escalating noise, bias drift, dropouts, 
+and spikes.
+
+Q: What sample data should we use for development and testing?
+A: You can freely use any sequence from the publicly available EuRoC MAV or 
+TUM-VI datasets as your sample data. Simply apply the provided degradation script 
+to these sequences to generate your own degraded testing sets.
+
+2. INPUT DATA & PROBLEM CONSTRAINTS
+--------------------------------------------------------------------------------
+Q: Will waypoint positions or timestamps be supplied to the estimator?
+A: No. Your pipeline must estimate the trajectory using ONLY the degraded IMU 
+file. Waypoints are used internally by our evaluation pipeline to score your 
+accuracy, but they are completely hidden from your algorithm.
+
+Q: How is the 5-second blind segment handled? Do we append rows?
+A: DO NOT append extra poses beyond the input timestamps. As per Slide 16, you 
+must output *exactly one pose per IMU frame*. The evaluation dataset will 
+contain timestamps during the blind 5-second window to tell you *when* to 
+predict, but the sensor values will be unusable/invalid.
+
+Q: How do 2-second dropouts appear in the CSV? 
+A: As you will see in `degrade_imu.py`, dropouts are represented by physically 
+MISSING rows. The script removes chunks of rows to simulate signal loss, meaning 
+there will be sudden jumps in your timestamp delta.
+
+3. EXECUTION LIMITS & IMPLEMENTATION
+--------------------------------------------------------------------------------
+Q: Python vs C++? Is main.cpp accepted?
+A: No. Although Slide 17 mentions `main.cpp`, we are requiring all teams to stick 
+exclusively to Python for Track 3 to ensure a standardized automated evaluation 
+environment. Please submit a standalone Python script (`main.py`).
+
+Q: How is the 8 MB peak RAM limit measured (process vs algorithm)?
+A: Because we require Python (where the interpreter alone exceeds 8 MB), the 8 MB 
+constraint is measured at the ALGORITHM / HEAP level. We are profiling the memory 
+footprint utilized by your data structures, buffers, and trajectory estimation 
+logic, not the base OS-level RSS of the runtime.
+
+Q: Processing order - Can we use future samples to refine earlier poses?
+A: Yes. Slide 14 specifies that this is an "offline" task. You may read the 
+entire CSV into memory (while strictly staying under the 8 MB limit) and perform 
+non-causal / batch smoothing before generating your `estimated_trajectory.txt`.
+
+4. SCORING & LOGISTICS
+--------------------------------------------------------------------------------
+Q: Will evo use alignment?
+A: Yes, the estimated trajectory will be aligned to the hidden ground truth 
+using SE(3) alignment (Umeyama) prior to computing the Absolute Trajectory Error 
+(ATE). You do not need to guess the exact starting global coordinate frame.
+
+Q: What is the required demo video length?
+A: Please aim for 2 to 3 minutes, with a strict maximum of 3 minutes.
+
+Q: What is the final deadline?
+A: The final submission deadline is November 22, 2026. The submission Google 
+Form link will be shared in the official announcements channel.

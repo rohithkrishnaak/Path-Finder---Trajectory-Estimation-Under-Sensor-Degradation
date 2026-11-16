@@ -9,7 +9,18 @@
 #include <cstring>
 #include <string>
 
+#include <cstdlib>
+
 #include "core/pipeline.hpp"
+
+static bool set_param(pf::Params& P, const std::string& k, double v) {
+#define PF_SET(name) if (k == #name) { P.name = (decltype(P.name))v; return true; }
+    PF_SET(sig_vprior) PF_SET(vprior_every) PF_SET(nn_sig_scale) PF_SET(nn_sig_floor) PF_SET(nn_every_blocks)
+    PF_SET(nn_full) PF_SET(nn_vmax) PF_SET(nn_noise_pow) PF_SET(tau_v_blind) PF_SET(tau_v_gap) PF_SET(sig_ba_rw) PF_SET(sig_bg_rw)
+    PF_SET(sig_v_gap) PF_SET(tau_w_blind)
+#undef PF_SET
+    return false;
+}
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -44,7 +55,10 @@ static void usage() {
 }
 
 int main(int argc, char** argv) {
-    std::string in, out = "estimated_trajectory.txt", metrics;
+    std::string in, out = "estimated_trajectory.txt", metrics, weights;
+    bool no_nn = false;
+    pf::Params P;
+    if (const char* e = std::getenv("PF_WEIGHTS")) weights = e;
     pf::BlindMode mode = pf::BlindMode::Auto;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -56,6 +70,13 @@ int main(int argc, char** argv) {
             else if (m == "none") mode = pf::BlindMode::None;
             else { usage(); return 2; }
         } else if (a == "--metrics" && i + 1 < argc) metrics = argv[++i];
+        else if (a == "--weights" && i + 1 < argc) weights = argv[++i];
+        else if (a == "--no-nn") no_nn = true;
+        else if (a == "--set" && i + 1 < argc) {
+            std::string kv = argv[++i];
+            const size_t e = kv.find('=');
+            if (e == std::string::npos || !set_param(P, kv.substr(0, e), std::atof(kv.c_str() + e + 1))) { usage(); return 2; }
+        }
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (in.empty()) in = a;
         else { usage(); return 2; }
@@ -63,10 +84,19 @@ int main(int argc, char** argv) {
     if (in.empty()) { usage(); return 2; }
 
     const auto t0 = std::chrono::steady_clock::now();
-    pf::Params P;
     pf::RunStats st;
     std::string err;
-    if (!pf::run(in, out, P, mode, st, err)) {
+    pf::VelNet net;
+    if (weights.empty() && !no_nn) {  // default: weights/vel.bin next to the executable (or in the current directory)
+        std::string dir = argv[0];
+        const size_t sl = dir.find_last_of("/\\");
+        dir = sl == std::string::npos ? "." : dir.substr(0, sl);
+        for (const std::string& c : {dir + "/weights/vel.bin", dir + "/vel.bin", std::string("src/weights/vel.bin")}) {
+            if (net.load_file(c)) break;
+        }
+    }
+    if (!weights.empty() && !no_nn && !net.load_file(weights)) { std::fprintf(stderr, "error: cannot load weights %s\n", weights.c_str()); return 1; }
+    if (!pf::run(in, out, P, mode, st, err, net.ok ? &net : nullptr)) {
         std::fprintf(stderr, "error: %s\n", err.c_str());
         return 1;
     }
