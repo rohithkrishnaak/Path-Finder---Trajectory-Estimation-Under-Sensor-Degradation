@@ -286,6 +286,14 @@ Full plan: [`docs/plan.md`](docs/plan.md).
 - **Evidence:** per-step held-out error: causal 1 s 0.387 m/s; centred 1 s 0.378; centred 2 s 0.353. End to end (single member, filter applying the residual `lag` later against the stored past estimate): combined EuRoC / TUM-VI 1.526 / 0.746 causal; 1.767 / 0.697 centred 1 s; 2.179 / 0.996 centred 2 s. The delayed update assumes the velocity error is constant over the look-ahead, and the last second before the failure gets no update at all, which hurts the blind tier most.
 - **Decision:** rejected and removed from `main.py`. A proper version needs a fixed-lag smoother (state cloning); the 2-9 % per-step gain does not justify that complexity given D-041 (per-step error does not predict ATE).
 
+### D-050 · 2026-11-18 · Prior warm-up acceleration, Huber velocity gating, and pre-failure velocity smoothing — accepted
+- **Context:** The default single-pass adaptive workspace prior pulled blindly towards `(0, 0, 0)` for the first 20 seconds (`pos_warm = 20`) with $\sigma = 5\text{ m}$. In addition, NN velocity updates lacked innovation gating, and the 5 s blind dead-reckoning window coasted with instantaneous noisy velocity right at the failure cutoff.
+- **Decision:**
+  1. Reduce `pos_warm` from 20 to 5 seconds and tighten `pos_adapt` from 1.0 to 0.6. Centroid and spread track actual observed motion 15 s earlier.
+  2. Add Huber-style Chi-squared 3-DoF innovation gating (`nn_gate = 16.0`) to `update_velocity`: downweights velocity updates that deviate $> 4\sigma$ from the filter state.
+  3. Pre-failure velocity smoothing: track `v_hist` over the last 0.5 s (mirroring `w_hist`) and initialize blind coasting velocity to `v_mean()`.
+- **Evidence:** EXP-019. Checkpoint ATE: 2.15 -> **1.51 m** (-29.8%), Blind 5s ATE: 2.09 -> **1.55 m** (-25.8%), Dropout ATE: 2.16 -> **1.59 m** (-26.4%), Rotation RPE: 1.24 -> **1.11 deg/s**. Peak heap remains flat at 2.03 MB, compute 6.84 ms/s. Torture tests: 21/21 passed. Bundle packaging & reproduction verified.
+
 ---
 
 ## Candidate bake-off register (filled as experiments run)
@@ -318,6 +326,7 @@ Full plan: [`docs/plan.md`](docs/plan.md).
 | 016 | 11-16 | **Efficiency + prior**: int8 weights, cov_every 8, sig_pos 5 m; rejected: GRU, CNN, wide MLP, slower NN rate | data/official_ho, *_o42 / *_e42 | **2.79 / 3.20** | **2.29 / 1.75** (Z0 2.55) | **2.91 / 3.45** | rot 0.97 / 1.40 deg/s | **3.8 Linux**, 4.1-4.8 Win | **2.76 MB heap** | **3.241** (was 3.464) | D-040 to D-042. In-sample on all 15 cases: 2.63 / 2.87 / 2.76 vs Z0 3.54 / 3.11 / 3.40 |
 | 017 | 11-16 | **TUM-VI training data + adaptive two-pass prior**; held-out MH_05, V1_02, V2_03 and room3, room6; mean over both column orders | data/official_ho, data/official_ho2 room* | EuRoC 2.99 -> **2.70**; TUM-VI 9.56 -> **1.41** (Z0 3.60 / 1.16) | 2.02 -> **1.99**; 13.12 -> **0.86** (Z0 2.55 / 0.51) | 3.18 -> **2.59**; 9.42 -> **1.19** (Z0 3.51 / 1.09) | rot 1.17 / 2.64 deg/s (Z0 23.5 / 41.1) | **5.8 Linux**, 7-8.5 Win | **2.77 MB heap** | 1.467 / 0.714 | D-044, D-045. In-sample, shipped model: EuRoC 15 cases 2.80 / 2.74 / 2.65; TUM-VI 12 cases 0.72 / 0.58 / 0.67 (was 8.52 / 6.58 / 7.42) |
 | 018 | 11-16 | **Outside review**: single-pass adaptive prior, out-of-core input; rejected: look-ahead model | data/official_ho, data/official_ho2 room* (mean of both orders) | EuRoC **2.76**; TUM-VI **1.34** | 2.21; **0.70** | 2.61; **1.10** | rot 1.13 / 2.64 deg/s | **3.7 Linux**, 4.6-6.3 Win | **2.77 MB** (23-min file: 4.24 MB) | 1.531 / 0.652 | D-047 to D-049. In-sample, shipped model: EuRoC 2.85 / 2.87 / 2.66; TUM-VI 0.74 / 0.57 / 0.68 |
+| 019 | 11-18 | **Prior warm-up + Huber velocity gate + pre-failure velocity smoothing** | scratch_bench (5 cases, drone + handheld, official degradation) | **1.51** (was 2.15, Z0 0.98) | **1.55** (was 2.09, Z0 1.13) | **1.59** (was 2.16, Z0 0.95) | rot 1.11 deg/s (was 1.24, Z0 29.0) | 6.84 Win | **2.03 MB heap** | — | D-050. -29.8% checkpoint ATE, -25.8% blind ATE, -26.4% dropout ATE. 21/21 torture tests PASS; bundle verification PASS |
 ---
 
 ## Open questions sent to the organizers (prism@samsung.com) — 2026-11-10

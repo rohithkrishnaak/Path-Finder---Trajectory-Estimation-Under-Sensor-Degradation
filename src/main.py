@@ -87,16 +87,18 @@ class Params:
     tau_v_blind = 0.5
     tau_w_blind = 1.0
     w_hist_s = 0.5
+    v_hist_s = 0.5
     # learned velocity measurement
     nn_sig_scale = 1.0     # predicted std multiplier (EXP-014: 1.0 vs 2.0 on held-out, both column orders)
     nn_sig_floor = 0.10
     nn_every_blocks = 10
     nn_vmax = 6.0
+    nn_gate = 16.0          # chi-squared 3-DoF outlier gate on innovation (0 = off)
     # bounded-workspace prior: weak pseudo-measurement "position = start" (0 = off)
     sig_pos = 5.0           # m; sigma while warming up (centre = start), then the upper bound (0 = prior off)
     pos_every = 200         # rows between prior updates (1 s)
-    pos_warm = 20           # prior updates before the adaptive prior takes over
-    pos_adapt = 1.0         # adaptive sigma per axis = pos_adapt * spread of the path so far (0 = keep sig_pos)
+    pos_warm = 5            # prior updates before the adaptive prior takes over
+    pos_adapt = 0.6         # adaptive sigma per axis = pos_adapt * spread of the path so far (0 = keep sig_pos)
     sig_pos_min = 0.3       # m
 
     def set(self, kv):
@@ -607,8 +609,19 @@ class ESKF:
             self.bg[i] += dx[IBG + i]
         self.q = qnorm(qmul(self.q, qexp(dx[ITH], dx[ITH + 1], dx[ITH + 2])))
 
-    def update_velocity(self, vw, sig):
-        self.update_block(IV, np.array([vw[i] - self.v[i] for i in range(3)]), sig)
+    def update_velocity(self, vw, sig, gate=0.0):
+        r = np.array([vw[i] - self.v[i] for i in range(3)])
+        if gate > 0.0:
+            self.flush()
+            P_vv = self.P[IV:IV + 3, IV:IV + 3]
+            S = P_vv + I3 * (sig * sig)
+            try:
+                d2 = float(r @ np.linalg.solve(S, r))
+                if d2 > gate:
+                    sig = sig * math.sqrt(d2 / gate)
+            except np.linalg.LinAlgError:
+                pass
+        self.update_block(IV, r, sig)
 
     def update_position(self, pw, sig):
         self.update_block(IP, np.array([pw[i] - self.p[i] for i in range(3)]), sig)
@@ -702,6 +715,9 @@ def _run(imu, out_path, P, net):
     w_sum = [0.0, 0.0, 0.0]
     w_gap = [0.0, 0.0, 0.0]
     in_gap = False
+    v_hist_n = max(1, int(round(P.v_hist_s / dt_nom)))
+    v_hist = deque()
+    v_sum = [0.0, 0.0, 0.0]
     # static window (real samples only): |a| running sums + raw samples
     SW = P.static_win
     win = deque()
@@ -725,6 +741,10 @@ def _run(imu, out_path, P, net):
     def w_mean():
         k = len(w_hist)
         return [w_sum[c] / k for c in range(3)] if k else [0.0, 0.0, 0.0]
+
+    def v_mean():
+        k = len(v_hist)
+        return [v_sum[c] / k for c in range(3)] if k else list(f.v)
 
     def coast(dt, tau_w, tau_v):
         """No usable IMU: decay the turn rate and the velocity (blind window and long gaps)."""
@@ -770,7 +790,7 @@ def _run(imu, out_path, P, net):
                     sig = max(P.nn_sig_floor, P.nn_sig_scale * math.sqrt(var))
                     R = qrot(q)
                     vw = [R[r][0] * vb[0] + R[r][1] * vb[1] + R[r][2] * vb[2] for r in range(3)]
-                    f.update_velocity(vw, sig)
+                    f.update_velocity(vw, sig, P.nn_gate)
                     st["nn_updates"] += 1
 
     def integrate_to(t1, g1, a1, interp):
@@ -835,6 +855,7 @@ def _run(imu, out_path, P, net):
                 # ---- blind window: the IMU has failed
                 if i == blind_start:
                     w_gap = w_mean()
+                    f.v = v_mean()
                 if dt > 0:
                     coast(dt, P.tau_w_blind, P.tau_v_blind)
                 wr.emit(t, f.p, f.q)
@@ -888,6 +909,12 @@ def _run(imu, out_path, P, net):
                 if len(w_hist) > w_hist_n:
                     o = w_hist.popleft()
                     w_sum[0] -= o[0]; w_sum[1] -= o[1]; w_sum[2] -= o[2]
+                vc = tuple(f.v)
+                v_hist.append(vc)
+                v_sum[0] += vc[0]; v_sum[1] += vc[1]; v_sum[2] += vc[2]
+                if len(v_hist) > v_hist_n:
+                    ov = v_hist.popleft()
+                    v_sum[0] -= ov[0]; v_sum[1] -= ov[1]; v_sum[2] -= ov[2]
                 # static detector over the last SW real samples
                 an = math.sqrt(a1[0] * a1[0] + a1[1] * a1[1] + a1[2] * a1[2]) - G
                 win.append((g1, a1, an))
