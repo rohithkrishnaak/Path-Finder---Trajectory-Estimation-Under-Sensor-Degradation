@@ -145,7 +145,8 @@ def main():
         # out-of-core path (long recordings): must give exactly the same file as the in-RAM path
         sys.path.insert(0, ROOT)
         import main as pf
-        st = pf.run(ref, os.path.join(tmp, "spill.txt"), pf.Params(), pf.VelNet(), spill_rows=4096)
+        st = pf.run(ref, os.path.join(tmp, "spill.txt"), pf.Params(), pf.VelNet(), spill_rows=4096,
+                    la_net=pf.load_la())
         same = open(os.path.join(tmp, "spill.txt"), "rb").read() == open(ref_out, "rb").read()
         ok = same and st["out_of_core"]
         fails += not ok

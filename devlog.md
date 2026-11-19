@@ -294,6 +294,62 @@ Full plan: [`docs/plan.md`](docs/plan.md).
   3. Pre-failure velocity smoothing: track `v_hist` over the last 0.5 s (mirroring `w_hist`) and initialize blind coasting velocity to `v_mean()`.
 - **Evidence:** EXP-019. Checkpoint ATE: 2.15 -> **1.51 m** (-29.8%), Blind 5s ATE: 2.09 -> **1.55 m** (-25.8%), Dropout ATE: 2.16 -> **1.59 m** (-26.4%), Rotation RPE: 1.24 -> **1.11 deg/s**. Peak heap remains flat at 2.03 MB, compute 6.84 ms/s. Torture tests: 21/21 passed. Bundle packaging & reproduction verified.
 
+### D-051 · 2026-11-18 · D-050 prior warm-up re-checked on held-out real data — partly reverted
+- **Context:** D-050 was measured only on `archive/scratch_bench`: five synthetic 50 s clips whose input files are not in the repository. The evaluation data is EuRoC / TUM-VI.
+- **Evidence (EXP-020, held-out, both column orders, se3):** EuRoC `data/official_ho` checkpoint / blind / dropout ATE: D-050 as shipped 3.06 / 2.06 / 2.89 m; with `pos_warm = 20`, `pos_adapt = 1.0` restored 2.64 / 2.07 / 2.49 m (Z0 3.60 / 2.55 / 3.51). TUM-VI rooms: 0.81 / 0.49 / 0.77 vs 0.83 / 0.42 / 0.77 (Z0 1.16 / 0.51 / 1.09). Ablation: the innovation gate never fires on these sets (identical scores with `nn_gate = 0`, 16 or 25), so the whole EuRoC regression came from the faster, tighter prior.
+- **Decision:** restore `pos_warm = 20` and `pos_adapt = 1.0`. Keep the gate (harmless safety net against bad NN outputs) and the pre-failure velocity smoothing (blind ATE unchanged on EuRoC).
+
+- **Correction (2026-11-18, later):** the numbers above were measured with the embedded ensemble, which was trained on all sequences, these included. Re-measured with the held-out ensemble `weights/mix/ho_ens.bin` (EXP-021), the revert still holds but is a trade-off: D-050's prior is worse on EuRoC (checkpoint 2.76 -> 3.15 m) and on 20 extra seeds (2.12 -> 2.32 m), better on TUM-VI (1.33 -> 1.22 m) and on blind ATE for the seeds (2.02 -> 1.70 m). Tier-weighted error sum (30 x checkpoint + 20 x blind + 10 x dropout, summed over the three test sets): 341 kept vs 351 with D-050.
+
+### D-052 · 2026-11-18 · Offline RTS smoother over the filter's updates; shorter blind velocity decay — accepted
+- **Context:** the FAQ allows offline processing: "You may read the entire CSV ... and perform non-causal / batch smoothing". The forward filter only lets each learned-velocity update correct the future. Post-hoc smoothing of the output (moving averages, shrinking towards the centroid) does nothing, because the error is slow drift, not jitter (`research/postproc_sweep.py`).
+- **Decision:** `main.py` logs every velocity / position update (zero-velocity, learned velocity, workspace prior): the measurement, its sigma, and the filter's position and velocity just before and after it. That is 160 bytes per event, about 6 events per second. After the forward pass, a per-axis [position, velocity] error-state Kalman filter replays those updates, and a backward RTS pass smooths them (`rts_offsets`). The forward poses are buffered (float32, 28 bytes per row, memory-mapped past 5 minutes like the input), and the position correction is interpolated in time between events. Settings:
+  - `sm_qv = 0.01`.
+  - `sm_centroid = 1`: inside the smoother, the workspace prior points at the centroid of the whole run instead of the running centroid.
+  - `sm_blind = 0`: no correction after the last update. Carrying the velocity correction into the blind window made blind ATE worse.
+  - `tau_v_blind`: 0.5 -> 0.25 s.
+- **Evidence (EXP-021):** held-out ensemble `weights/mix/ho_ens.bin`, three test sets (`data/official_ho`; `data/official_ho2` room*; `data/ho_seeds`, which holds the five held-out sequences x organiser-script seeds 1-4). Checkpoint / blind / dropout ATE:
+  - EuRoC: 2.76 / 2.21 / 2.61 -> **2.71 / 2.14 / 2.62**.
+  - TUM-VI: 1.33 / 0.65 / 1.09 -> **1.21 / 0.52 / 0.96**.
+  - Seeds: 2.12 / 2.02 / 2.02 -> **2.05 / 1.88 / 1.93**.
+  - Tier-weighted sum: 341.1 -> **325.0 (-4.7 %)**. 1 s translation RPE: 0.68 -> 0.54 on EuRoC.
+  - Sweep (weighted sum): `sm_qv` 0.005 / 0.01 / 0.02 / 0.05 -> 323.0 / 325.0 / 327.4 / about 330. Without the whole-run centroid: 327.8. Blind velocity time constant 0.1 s: 324.0.
+  - The middle of a flat optimum was chosen, to avoid tuning to five sequences.
+  - Budgets: peak heap 2.8 -> **4.4 MB** on the longest EuRoC flight (36k rows; about 5.6 MB at the 60k-row spill threshold); compute 4.0 -> **4.5 ms per IMU-second**. 22/22 torture tests pass, including the out-of-core byte-identity check.
+- **Still open:** in the small TUM-VI rooms a fixed pose is still marginally better before the failure (1.16 vs 1.21 m) and in the blind window (0.51 vs 0.52 m). On the extra seeds the fixed pose wins the blind tier (1.73 vs 1.88 m).
+
+### D-053 · 2026-11-18 · More TUM-VI training data (corridor, slides, magistrale) — rejected
+- **Context:** TUM-VI has more handheld sequences than the six rooms. Ten more were fetched (`fetch_tumvi.py --tail-mb 40`: corridor1-5, slides1-3, magistrale1-2; about 13 minutes of ground truth, which exists only in the motion-capture room at the start and end of each). The trainer already masks windows that touch ground-truth gaps.
+- **Evidence (EXP-022):** a held-out ensemble with the same recipe and the same five validation sequences excluded (`weights/x/ho_ens.bin`, not committed).
+  - Validation: velocity RMSE 0.378 -> 0.375 m/s; normalised squared error 2.6 -> 1.9 (better-calibrated uncertainty).
+  - End to end, tier-weighted sum over the 30 held-out cases: 325.0 (current) vs **333.8**. TUM-VI checkpoint / dropout improve (1.21 -> 1.17, 0.96 -> 0.88 m), but TUM-VI blind gets worse (0.52 -> 0.75 m), and EuRoC slightly worse (2.71 -> 2.76 m).
+  - Re-tuning the uncertainty scale does not recover it: `nn_sig_scale` 1.2 / 1.4 -> 339.5 / 344.5.
+- **Decision:** keep the shipped ensemble. It is trained on all 11 EuRoC sequences and TUM-VI rooms 1-6, the held-out ones included, so it has seen all the room-scale data. The extra sequences are mostly corridor walking, which matches the evaluation flights less well.
+
+### D-054 · 2026-11-19 · Look-ahead velocity model inside the offline smoother — accepted
+- **Context:** D-049 rejected a look-ahead velocity model only because the forward filter could not apply a measurement for a past instant. The D-052 smoother can: every logged update is replayed at its own time.
+- **Decision:**
+  - `train_vel.py --lag 120` trains the same 450-256-128-6 network to predict the body velocity 120 samples (0.6 s, three 0.2 s ticks) before the window end. The window then holds 0.4 s of history and 0.6 s of future.
+  - `main.py` embeds this second ensemble (`_LA_*`, written by `embed_weights.py --lookahead 120`).
+  - The forward filter is unchanged and still uses the causal ensemble. Three ticks later, the look-ahead prediction for a tick replaces that tick's logged measurement and sigma, rotated with the attitude stored for that block. So the smoother sees the better measurement at the right instant.
+  - The last three ticks before the failure have no future window and keep their causal measurement.
+- **Evidence (EXP-023):** held-out ensembles (`weights/mix/ho_ens.bin` causal, `weights/la/ho120_ens.bin` look-ahead), 30 cases, with the D-055 switch on.
+  - Validation velocity RMSE: causal 0.378, lag 80 0.358, lag 120 **0.352 m/s**.
+  - Tier-weighted sum: 315.9 without look-ahead -> lag 80 314.1 -> **lag 120 312.2**.
+  - EuRoC checkpoint / blind / dropout: 2.71 / 2.14 / 2.62 -> **2.63** / 2.17 / **2.50**. TUM-VI: 1.12 / 0.39 / 0.88 -> 1.11 / 0.41 / 0.87.
+  - The blind tier is flat, as expected: there is no future data after the failure.
+  - Cost: one more network call per 0.2 s and 0.45 MB more embedded weights.
+
+### D-055 · 2026-11-19 · Drone / handheld detection from rotor vibration; D-050 prior for handheld only — accepted
+- **Context:** the D-050 prior (`pos_warm = 5`, `pos_adapt = 0.6`) helped TUM-VI (handheld, about 3 m rooms) and hurt EuRoC (drone, large hall); see D-051. The two platforms are easy to tell apart.
+- **Evidence for the detector:** the median over 1 s windows of the RMS first difference of the accelerometer is 2.1-3.8 m/s^2 on all 11 EuRoC flights (rotor vibration) and 0.17-0.22 on all six TUM-VI rooms. Under the official degradation the handheld 90th percentile stays below 0.8. Threshold 1.0. The first 10 s alone do not separate them: the machine-hall drone sits with its motors off.
+- **Decision:** `vibration()` / `apply_domain()` in `main.py` classify the run (chunked; `--set domain=1|2` forces it). Handheld runs get the `hh_*` overrides; only `hh_pos_adapt = 0.6` and `hh_pos_warm = 5` are set.
+- **Evidence (12 held-out handheld cases, weighted sum):**
+  - Current 116.3. With the D-050 prior **102.9 (-11.5 %)**.
+  - Variants are all in 101.9-104.2: smoother prior scale 0.6 plus end offset held, blind tau 0.1, and combinations. The simplest was kept.
+  - TUM-VI 1.21 / 0.52 / 0.96 -> **1.12 / 0.39 / 0.88**. This beats the fixed pose (1.16 / 0.51 / 1.09) on every tier for the first time.
+  - Drone runs are unchanged. Over all 30 cases: 325.0 -> 315.9.
+
 ---
 
 ## Candidate bake-off register (filled as experiments run)
@@ -326,7 +382,11 @@ Full plan: [`docs/plan.md`](docs/plan.md).
 | 016 | 11-16 | **Efficiency + prior**: int8 weights, cov_every 8, sig_pos 5 m; rejected: GRU, CNN, wide MLP, slower NN rate | data/official_ho, *_o42 / *_e42 | **2.79 / 3.20** | **2.29 / 1.75** (Z0 2.55) | **2.91 / 3.45** | rot 0.97 / 1.40 deg/s | **3.8 Linux**, 4.1-4.8 Win | **2.76 MB heap** | **3.241** (was 3.464) | D-040 to D-042. In-sample on all 15 cases: 2.63 / 2.87 / 2.76 vs Z0 3.54 / 3.11 / 3.40 |
 | 017 | 11-16 | **TUM-VI training data + adaptive two-pass prior**; held-out MH_05, V1_02, V2_03 and room3, room6; mean over both column orders | data/official_ho, data/official_ho2 room* | EuRoC 2.99 -> **2.70**; TUM-VI 9.56 -> **1.41** (Z0 3.60 / 1.16) | 2.02 -> **1.99**; 13.12 -> **0.86** (Z0 2.55 / 0.51) | 3.18 -> **2.59**; 9.42 -> **1.19** (Z0 3.51 / 1.09) | rot 1.17 / 2.64 deg/s (Z0 23.5 / 41.1) | **5.8 Linux**, 7-8.5 Win | **2.77 MB heap** | 1.467 / 0.714 | D-044, D-045. In-sample, shipped model: EuRoC 15 cases 2.80 / 2.74 / 2.65; TUM-VI 12 cases 0.72 / 0.58 / 0.67 (was 8.52 / 6.58 / 7.42) |
 | 018 | 11-16 | **Outside review**: single-pass adaptive prior, out-of-core input; rejected: look-ahead model | data/official_ho, data/official_ho2 room* (mean of both orders) | EuRoC **2.76**; TUM-VI **1.34** | 2.21; **0.70** | 2.61; **1.10** | rot 1.13 / 2.64 deg/s | **3.7 Linux**, 4.6-6.3 Win | **2.77 MB** (23-min file: 4.24 MB) | 1.531 / 0.652 | D-047 to D-049. In-sample, shipped model: EuRoC 2.85 / 2.87 / 2.66; TUM-VI 0.74 / 0.57 / 0.68 |
-| 019 | 11-18 | **Prior warm-up + Huber velocity gate + pre-failure velocity smoothing** | scratch_bench (5 cases, drone + handheld, official degradation) | **1.51** (was 2.15, Z0 0.98) | **1.55** (was 2.09, Z0 1.13) | **1.59** (was 2.16, Z0 0.95) | rot 1.11 deg/s (was 1.24, Z0 29.0) | 6.84 Win | **2.03 MB heap** | — | D-050. -29.8% checkpoint ATE, -25.8% blind ATE, -26.4% dropout ATE. 21/21 torture tests PASS; bundle verification PASS |
+| 019 | 11-18 | **Prior warm-up + Huber velocity gate + pre-failure velocity smoothing** | archive/scratch_bench (5 cases, drone + handheld, official degradation) | **1.51** (was 2.15, Z0 0.98) | **1.55** (was 2.09, Z0 1.13) | **1.59** (was 2.16, Z0 0.95) | rot 1.11 deg/s (was 1.24, Z0 29.0) | 6.84 Win | **2.03 MB heap** | — | D-050. -29.8% checkpoint ATE, -25.8% blind ATE, -26.4% dropout ATE. 21/21 torture tests PASS; bundle verification PASS |
+| 020 | 11-18 | **D-050 re-check on held-out real data**; prior warm-up reverted | data/official_ho, data/official_ho2 room* (both orders) | EuRoC 3.06 -> **2.64**; TUM-VI 0.83 | 2.07; **0.42** | 2.89 -> **2.49**; 0.77 | rot 1.09 / 2.16 deg/s | 3.8-4.2 Win | 2.77 MB | — | D-051. Gate never fires on real data; prior warm-up caused the EuRoC regression |
+| 021 | 11-18 | **Offline RTS smoother** + whole-run centroid prior + blind tau 0.25 s; held-out ensemble `ho_ens.bin` | data/official_ho, official_ho2 room*, ho_seeds (20 cases) | EuRoC 2.76 -> **2.71**; TUM-VI 1.33 -> **1.21**; seeds 2.12 -> **2.05** | 2.21 -> **2.14**; 0.65 -> **0.52**; 2.02 -> **1.88** | 2.61 -> 2.62; 1.09 -> **0.96**; 2.02 -> **1.93** | rot 1.13 / 2.63 deg/s; RPE_t 1 s 0.68 -> 0.54 | 4.5 Win | **4.43 MB** (MH_01) | 341.1 -> **325.0** (tier-weighted) | D-052. Physics-only (`--no-nn`): 8.36 / 6.01 / 9.52 EuRoC |
+| 022 | 11-18 | Extra TUM-VI training data (corridor1-5, slides1-3, magistrale1-2), held-out ensemble | 30 held-out cases | EuRoC 2.76; TUM-VI 1.17; seeds 2.05 | 2.23; 0.75; 1.99 | 2.69; 0.88; 1.93 | | | | 333.8 (vs 325.0) | D-053, rejected |
+| 023 | 11-19 | **Drone/handheld switch (D-055) + look-ahead velocity in the smoother (D-054)**; held-out ensembles | 30 held-out cases | EuRoC 2.71 -> **2.63**; TUM-VI 1.21 -> **1.11**; seeds 2.05 -> **1.99** | 2.14 -> 2.17; 0.52 -> **0.41**; 1.88 -> **1.80** | 2.62 -> **2.50**; 0.96 -> **0.87**; 1.93 -> **1.90** | | | | 325.0 -> **312.2** (switch alone 315.9) | Look-ahead lag 120 > 80 (314.1) |
 ---
 
 ## Open questions sent to the organizers (prism@samsung.com) — 2026-11-10

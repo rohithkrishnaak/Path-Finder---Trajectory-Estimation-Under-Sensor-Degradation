@@ -1,0 +1,117 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/dji/mavic/protos/Mavic2Pro.proto"
+
+WorldInfo {
+  info [
+    "Path Finder demo: replays a held-out EuRoC flight."
+    "Mavic = ground truth, orange = Path Finder (IMU only), red = physics-only filter."
+  ]
+  title "Path Finder - Track 3 demo"
+  basicTimeStep 32
+  gravity 0
+}
+DEF VIEW Viewpoint {
+  orientation 0.25 -0.1 -0.96 0.9
+  position -7 5 5
+  near 0.05
+  followType "None"
+}
+TexturedBackground {
+  texture "factory"
+}
+TexturedBackgroundLight {
+  texture "factory"
+}
+RectangleArena {
+  floorSize 9 9
+  floorTileSize 1 1
+  floorAppearance Parquetry {
+    type "light strip"
+  }
+  wallHeight 0.4
+}
+DEF GT Mavic2Pro {
+  translation 0 0 1
+  controller "<none>"
+  name "ground_truth"
+}
+DEF EST Pose {
+  translation 0 0 1
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 1 0.45 0
+        emissiveColor 0.6 0.25 0
+        transparency 0.15
+        roughness 0.4
+        metalness 0
+      }
+      geometry Sphere {
+        radius 0.085
+        subdivision 3
+      }
+    }
+    Pose {
+      translation 0.14 0 0
+      rotation 0 1 0 1.5708
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 1 0.45 0
+            emissiveColor 0.6 0.25 0
+            metalness 0
+          }
+          geometry Cone {
+            bottomRadius 0.06
+            height 0.16
+          }
+        }
+      ]
+    }
+  ]
+}
+DEF NONN Pose {
+  translation 0 0 1
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.85 0.1 0.1
+        emissiveColor 0.5 0 0
+        transparency 0.3
+        metalness 0
+      }
+      geometry Sphere {
+        radius 0.08
+        subdivision 2
+      }
+    }
+  ]
+}
+DEF TARGET Pose {
+  translation 0 0 0.005
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.1 0.7 0.2
+        emissiveColor 0 0.4 0.1
+        metalness 0
+      }
+      geometry Cylinder {
+        height 0.01
+        radius 0.25
+      }
+    }
+  ]
+}
+DEF TRAILS Group {
+}
+Robot {
+  name "director"
+  controller "replay"
+  supervisor TRUE
+}

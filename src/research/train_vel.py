@@ -37,6 +37,7 @@ BLK = 4
 T = W // BLK     # 50 steps
 IN = T * 9
 SA, SG = 0.2, 0.5   # input scaling (accel, gyro)
+LAG = 0          # label LAG samples before the window end (look-ahead model; main.py smoother, D-054)
 ORDER = ("l1.weight", "l1.bias", "l2.weight", "l2.bias", "l3.weight", "l3.bias")
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -155,7 +156,7 @@ def make_batch(D, idx, augment, extra_aug=True):
     it = torch.as_tensor(idx, device=DEV)
     ii = it[:, None] + ar[None]
     g, a = G[ii], A[ii]
-    Rk, ve = R[BI[ii]], V[BI[it]]
+    Rk, ve = R[BI[ii]], V[BI[it - LAG]]
     if augment:
         if extra_aug:
             u = torch.rand(B, 1, 1, device=DEV)
@@ -167,7 +168,7 @@ def make_batch(D, idx, augment, extra_aug=True):
         tilt = torch.randn(B, 3, device=DEV) * np.deg2rad(AUG["tilt"])
         tilt[:, 2] = 0
         Rk = exp_so3(tilt)[:, None] @ Rk
-    Re = Rk[:, -1]                                              # attitude at the window end
+    Re = Rk[:, -1 - LAG]                                        # attitude at the labelled instant
     gb = Rk[..., 2, :]                                          # R^T e_z in body frame = third row of R
     x = torch.cat([a * SA, g * SG, gb], -1).reshape(B, T, BLK, 9).mean(2).reshape(B, IN)
     y = (Re.transpose(1, 2) @ ve[..., None])[..., 0]            # velocity in the body frame
@@ -215,7 +216,10 @@ def main():
     ap.add_argument("--gyrb", type=float, default=0.05)
     ap.add_argument("--official", type=int, default=8, help="official-style degraded copies per sequence")
     ap.add_argument("--p-off", type=float, default=0.7, help="fraction of each batch from the official copies")
+    ap.add_argument("--lag", type=int, default=0, help="look-ahead model: predict the velocity LAG samples before the window end (multiple of 40 = one main.py tick)")
     a = ap.parse_args()
+    global LAG
+    LAG = a.lag
     AUG.update(tilt=a.tilt, accn=a.accn, accb=a.accb, gyrb=a.gyrb)
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)

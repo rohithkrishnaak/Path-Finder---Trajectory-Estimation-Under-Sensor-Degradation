@@ -41,21 +41,23 @@ def zero_like(est_path, out_path):
             g.write(f"{line.split()[0]} 0 0 0 0 0 0 1\n")
 
 
-def run_case(zp, est, P, weights=None, no_nn=False, mem=True):
+def run_case(zp, est, P, weights=None, no_nn=False, mem=True, la_weights=None, la_lag=None):
     """CPU seconds of an untraced run (model load included), then, if `mem`, the peak heap (MB) of a second
     run under tracemalloc. Returns (run statistics, cpu seconds, peak MB or NaN). Used by make_bundle.py too."""
     t0 = time.process_time()
     net = None if no_nn else pf.VelNet(weights)
-    st = pf.run(zp, est, P, net)
+    la = None if no_nn else pf.load_la(la_weights, la_lag)
+    st = pf.run(zp, est, P, net, la_net=la)
     cpu = time.process_time() - t0
     peak = float("nan")
     if mem:
         tracemalloc.start()
         base = tracemalloc.get_traced_memory()[0]
         net = None if no_nn else pf.VelNet(weights)
-        pf.run(zp, est, P, net)
+        la = None if no_nn else pf.load_la(la_weights, la_lag)
+        pf.run(zp, est, P, net, la_net=la)
         peak = (tracemalloc.get_traced_memory()[1] - base) / 2 ** 20
-        del net
+        del net, la
         tracemalloc.stop()
     return st, cpu, peak
 
@@ -69,6 +71,8 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--mode", default="se3")
     ap.add_argument("--no-nn", action="store_true")
+    ap.add_argument("--la-weights", help="external float32 look-ahead ensemble (default: the one embedded in main.py)")
+    ap.add_argument("--la-lag", type=int, help="its lag in samples")
     ap.add_argument("--mem", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--json")
@@ -83,7 +87,7 @@ def main():
         base = zp[:-4]
         name = os.path.basename(base)
         est = os.path.join(tmp, name + ".txt")
-        st, cpu, peak = run_case(zp, est, P, a.weights, a.no_nn, a.mem)
+        st, cpu, peak = run_case(zp, est, P, a.weights, a.no_nn, a.mem, a.la_weights, a.la_lag)
         with open(base + ".meta.json") as fh:
             meta = json.load(fh)
         r = score(base + ".gt.txt", est, meta, [a.mode])[a.mode]

@@ -12,9 +12,9 @@ Path Finder estimates the 6-DoF pose at every input row, including the blind 5 s
 
 | Budget (official) | Limit | Measured (longest EuRoC sequence, MH_01, 35.6k rows) |
 |---|---|---|
-| Peak memory (algorithm / heap, `tracemalloc`) | ≤ 8 MB | **2.77 MB**, including the 0.45 MB embedded model |
-| Compute | ≤ 20 ms per 1 s of IMU | **3.7 ms** (Linux, one pinned core); 4.6-6.3 ms (Windows) |
-| Long recordings | same limits | a 23-minute file peaks at 4.2 MB (rows beyond 5 minutes are memory-mapped from a temp file) |
+| Peak memory (algorithm / heap, `tracemalloc`) | ≤ 8 MB | **4.88 MB**, including the two embedded ensembles (0.9 MB) and the 1 MB pose buffer of the offline smoother |
+| Compute | ≤ 20 ms per 1 s of IMU | **5-6 ms** (Windows laptop, one thread; 3.7 ms on Linux before the smoother) |
+| Long recordings | same limits | rows beyond 5 minutes (input and pose buffer) are memory-mapped from temp files; a 23-minute file peaked at 4.2 MB before D-052, and the smoother adds about 160 bytes per update event (about 6 per second) |
 | Threads | 1 | 1 |
 | Network | offline | offline |
 
@@ -80,31 +80,41 @@ It then checks the layout, runs the format check (one pose per input row, exact 
    - Static detection triggers zero-velocity, gravity-tilt and zero-rate updates.
    - **A learned body-frame velocity measurement every 0.2 s.** This is a 3-member MLP ensemble (450-256-128-6) that reads the last 1 s of IMU and the gravity direction, and predicts velocity plus its uncertainty. It is trained on EuRoC (drone) and TUM-VI room (handheld) ground truth with IMU degraded by the organisers' `degrade_imu.py` (16 random seeds, severities and ramps per sequence, both column orders), rebuilt on the time grid exactly as `main.py` bridges gaps.
    - **An adaptive bounded-workspace prior.** Once per second the filter looks at the path so far: its centroid, and its spread on each axis. After a 20 s warm-up it adds a pseudo-measurement "position = that centroid", with a per-axis standard deviation equal to the spread (between 0.3 m and 5 m). This bounds the slow drift of dead reckoning and adapts to the size of the space, from a 3 m room to a 10 m hall. `--set pos_adapt=0` keeps a fixed 5 m prior at the start position; `--set sig_pos=0` turns the prior off.
-5. **Long gaps and the blind 5 s**: a decaying constant-velocity / turn-rate model, started from the filter state.
+5. **Long gaps and the blind 5 s**: a decaying constant-velocity / turn-rate model, started from the filter state (velocity time constant 0.25 s in the blind window).
+6. **Offline RTS smoother** (D-052; the FAQ allows non-causal processing). Every velocity / position update of the forward filter is logged: the measurement, its sigma, and the state just before and after it, about 6 events per second. A per-axis [position, velocity] error-state Kalman filter replays them, and a backward Rauch-Tung-Striebel pass lets each learned-velocity update also correct the path before it. Inside the smoother the workspace prior points at the centroid of the whole run. The forward poses are buffered (28 bytes per row, memory-mapped past 5 minutes) and written once with the interpolated correction. `--set smooth=0` turns it off.
+7. **Look-ahead velocity in the smoother** (D-054). A second embedded ensemble (`_LA_*`, trained with `train_vel.py --lag 120`) predicts the velocity 0.6 s before the end of its 1 s window. Three 0.2 s ticks later, it replaces that tick's logged measurement, so the smoother gets a 7 % more accurate velocity at the right instant. The forward filter still uses the causal model; the last 0.6 s before the failure keeps the causal measurement.
+8. **Drone / handheld switch** (D-055). The median 1 s accelerometer vibration is 2-4 m/s^2 on a drone (rotors) and below 0.3 handheld. Handheld runs use a tighter, faster workspace prior (`hh_pos_adapt = 0.6`, `hh_pos_warm = 5`). `--set domain=1|2` forces drone or handheld.
 
-The decisions, alternatives and evidence are in `../devlog.md`. D-030 to D-035 cover the move to Python and the official degradation; D-036 to D-039 cover the embedded model and the retraining; D-040 to D-043 cover the int8 model, the workspace prior and the ideas that were tested and rejected; D-044 to D-046 cover the TUM-VI training data and the adaptive prior; D-047 to D-049 cover the outside review (single-pass prior, out-of-core input, the look-ahead model that was rejected).
+The decisions, alternatives and evidence are in `../devlog.md`. D-030 to D-035 cover the move to Python and the official degradation; D-036 to D-039 cover the embedded model and the retraining; D-040 to D-043 cover the int8 model, the workspace prior and the ideas that were tested and rejected; D-044 to D-046 cover the TUM-VI training data and the adaptive prior; D-047 to D-049 cover the outside review (single-pass prior, out-of-core input, the look-ahead model that was rejected); D-050 and D-051 cover the innovation gate, pre-failure velocity smoothing and the prior warm-up re-check on held-out data.
 
 ## Results (official `degrade_imu.py`, seed 42, SE(3) alignment, metres)
-Held-out sequences only: three EuRoC drone flights (MH_05, V1_02, V2_03) and two TUM-VI handheld rooms (room3, room6). The models scored here were trained with exactly the shipped recipe but without these five sequences. Each number is the mean over both input variants (documented `t, accel, gyro` order, and the raw EuRoC-format file fed straight into the script).
+Held-out sequences only: three EuRoC drone flights (MH_05, V1_02, V2_03) and two TUM-VI handheld rooms (room3, room6).
+- Scored with `weights/mix/ho_ens.bin`: the same recipe as the shipped model, but trained without these five sequences.
+- Each number is the mean over both input variants: the documented `t, accel, gyro` order, and the raw EuRoC-format file fed straight into the script.
+- Reproduce with `python src/eval/bench.py --cases data/official_ho --weights weights/mix/ho_ens.bin --la-weights weights/la/ho120_ens.bin --la-lag 120` (EXP-023).
 
 | Dataset | Model | Before failure | Blind 5 s | Around dropouts | Rotation RPE (deg/s) |
 |---|---|---|---|---|---|
-| EuRoC (drone) | **Path Finder (current)** | **2.76** | 2.21 | **2.61** | 1.13 |
-| EuRoC (drone) | Trained on EuRoC only, fixed 5 m prior | 2.99 | 2.02 | 3.18 | 1.18 |
+| EuRoC (drone) | **Path Finder (current)** | **2.63** | **2.17** | **2.50** | **1.13** |
+| EuRoC (drone) | EXP-020 settings (no smoother, look-ahead or platform switch) | 2.76 | 2.21 | 2.61 | 1.13 |
+| EuRoC (drone) | Same filter without the learned velocity | 8.36 | 6.01 | 9.52 | |
 | EuRoC (drone) | A pose that never moves | 3.60 | 2.55 | 3.51 | 23.5 |
-| TUM-VI (handheld) | **Path Finder (current)** | **1.34** | **0.70** | **1.10** | **2.64** |
-| TUM-VI (handheld) | Trained on EuRoC only, fixed 5 m prior | 9.56 | 13.12 | 9.42 | 2.58 |
+| TUM-VI (handheld) | **Path Finder (current)** | **1.11** | **0.41** | **0.87** | **2.65** |
+| TUM-VI (handheld) | EXP-020 settings | 1.33 | 0.65 | 1.09 | 2.63 |
+| TUM-VI (handheld) | Same filter without the learned velocity | 2.91 | 1.90 | 1.69 | |
 | TUM-VI (handheld) | A pose that never moves | 1.16 | 0.51 | 1.09 | 41.1 |
 
-- Training on both datasets is what makes the handheld case work at all: a drone-only model is off by about 9.5 m in a 3 m room.
-- On EuRoC, Path Finder beats the fixed pose on every tier. On the small TUM-VI rooms its position error is still slightly above a fixed pose, while its rotation is 15 times better.
-- IMU-only dead reckoning drifts about 3 m in 10 s on these sequences even with the learned velocity (D-041), which is why the margins over a fixed pose are modest.
+- **Learned velocity:** it is what makes IMU-only tracking work. Without it, the error is 3 to 4 times larger.
+- **Offline smoother, look-ahead velocity and drone/handheld switch** (D-052, D-054, D-055): together they cut the tier-weighted error from 341 to 312 (-8.5 %) across 30 held-out cases, 20 of them extra degradation seeds in `data/ho_seeds`.
+- Path Finder beats a fixed pose on every tier on both datasets.
+- **Drift:** IMU-only dead reckoning drifts about 3 m in 10 s even with the learned velocity (D-041), which is why the margins over a fixed pose are modest.
 
 ## Repository layout
 ```
 src/
   main.py                    the submission: complete pipeline (numpy only), model embedded
-  weights/vel.bin            the same ensemble as a float32 file (source for research/embed_weights.py)
+  weights/vel.bin            the causal ensemble as a float32 file (source for research/embed_weights.py)
+  weights/vel_la.bin         the look-ahead ensemble (lag 120), embedded with embed_weights.py --lookahead 120
   requirements.txt           numpy (runtime); research extras are in research/requirements.txt
   Dockerfile
   research/
@@ -112,6 +122,7 @@ src/
     make_official.py         builds test cases with it (zip + interpolated ground truth + meta)
     common.py                I/O + rotation utilities for the tooling
     train_vel.py             training the velocity network (PyTorch, CPU is enough) incl. official-style copies
+    postproc_sweep.py        offline post-processing sweep (moving average / shrinkage; rejected in D-052)
     embed_weights.py         writes a weight file into main.py (int8 + per-row scale, base64)
     sim_traj.py, degrade.py  synthetic trajectories and our earlier randomised simulator
     get_euroc.py, fetch_euroc.py      EuRoC download / extraction
@@ -132,6 +143,9 @@ python src/research/fetch_tumvi.py --out data/tumvi
 python src/research/make_official.py --euroc data/euroc --out-dir data/official
 python src/research/make_official.py --euroc data/tumvi --out-dir data/official_tumvi
 python src/eval/bench.py --cases data/official --glob "*_o42.zip" --mem
+# held-out numbers: model trained without MH_05, V1_02, V2_03, room3, room6; extra seeds 1-4 of the same flights
+python src/research/make_official.py --euroc data/euroc --out-dir data/ho_seeds --seqs MH_05_difficult,V1_02_medium,V2_03_difficult --seed 1
+python src/eval/bench.py --cases data/official_ho --weights weights/mix/ho_ens.bin
 python src/tests/torture.py
 python src/eval/make_bundle.py data/official/MH_01_easy_o42.zip --team CollegeName_TeamName
 # retrain + re-embed (about 2 min per member on a laptop CPU):

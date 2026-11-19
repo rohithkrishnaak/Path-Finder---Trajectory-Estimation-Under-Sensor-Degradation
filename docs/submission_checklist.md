@@ -1,6 +1,6 @@
 # Track 3 submission checklist
 
-Sources: the organisers' slides (14-17 and 24), `Track3_FAQ_Responses.txt` and `degrade_imu.py`. Deadline: **22 Nov 2026, 11:59 PM**. "Teams NOT following the submission guideline would lead to direct disqualification."
+Sources: the organisers' slides (14-17 and 24), `docs/organisers/Track3_FAQ_Responses.txt` and `docs/organisers/degrade_imu.py` (used unmodified by the tooling as `src/research/official/degrade_imu.py`). Deadline: **22 Nov 2026, 11:59 PM**. "Teams NOT following the submission guideline would lead to direct disqualification."
 
 ## Met and verified by the tooling
 
@@ -12,21 +12,33 @@ Sources: the organisers' slides (14-17 and 24), `Track3_FAQ_Responses.txt` and `
 | Output: `estimated_trajectory.txt`, space-separated, 8 columns, `#` header, seconds, unit quaternion (slide 16) | `Writer` in `main.py`; timestamps printed from integer ns | `eval/format_check.py` |
 | Exactly one pose per IMU frame; never append (slide 16, FAQ) | one pose per input row, duplicates and the blind rows included | `format_check.py` fails on any count or timestamp mismatch |
 | Only the degraded IMU file is used; no waypoints (FAQ) | nothing else is read | code |
-| ≤ 8 MB peak memory, algorithm / heap level (slide 14, FAQ) | 2.77 MB on the longest EuRoC sequence; 4.2 MB on a 23-minute file (out-of-core input) | `eval/bench.py --mem` (tracemalloc) |
-| ≤ 20 ms per 1 s of IMU, single CPU thread, offline (slide 14) | 3.7 ms on Linux with one pinned core (4.6-6.3 ms on Windows); no network or threads used | `bench.py`, WSL run with `taskset -c 0` |
+| ≤ 8 MB peak memory, algorithm / heap level (slide 14, FAQ) | 4.88 MB on the longest EuRoC sequence with the offline smoother and look-ahead model (D-052, D-054); the input and pose buffer are memory-mapped beyond 5 minutes | `eval/bench.py --mem` (tracemalloc) |
+| ≤ 20 ms per 1 s of IMU, single CPU thread, offline (slide 14) | about 5-6 ms on a Windows laptop, one thread; no network or threads used | `bench.py`, WSL run with `taskset -c 0` |
 | Dropouts are missing rows; blind 5 s rows carry invalid values (FAQ) | short gaps bridged, zero rows treated as the failure | `data/official*` cases built with the organisers' script |
 | Datasets: EuRoC MAV and TUM-VI (slide 14) | the model is trained on both; both have held-out test cases | `bench.py` on `data/official` and `data/official_tumvi` |
 | README with reproducible setup, Docker files and requirements (slide 24) | `src/README.md`, `src/Dockerfile`, `src/requirements.txt` | Docker itself is not installed on the dev machine, so the image build is untested |
+
+## GitHub checklist (submission form)
+
+| Form item | Status | Where |
+|---|---|---|
+| Submission package, as per theme | Done (built from a held-out test input; rebuild from the official input when it is released) | `submission/VIT_tan-x.zip` |
+| Source code | Done | `src/` |
+| Presentation | Done: rewritten for the Python runtime and the current results; team and college filled in | `VIT_tan-x_Submission.pptx` / `.pdf` |
+| Video | Done: 2 min 47 s walkthrough with a Webots replay; upload it to YouTube or Drive and paste the link into slide 7 | `demo/video/PathFinder_demo.mp4`, `demo/README.md` |
+| AI disclosure | **Team to write** | — |
+| README | Done | `README.md`, `src/README.md`, `src/Dockerfile`, `src/requirements.txt` |
+| APK / SDK | Not applicable (Python script) | — |
 
 ## Left for the team
 
 | Item | Note |
 |---|---|
-| Team name | Registered as `CollegeName_TeamName`. Build with `python src/eval/make_bundle.py <official input.zip> --team <that name>` |
-| Final `estimated_trajectory.txt` | Must be generated from the organisers' evaluation input once it is released; the bundle in `out/` uses a test input |
+| Team name | Done: `VIT_tan-x` (VIT, Vellore; team tan-x). Rebuild the bundle with `python src/eval/make_bundle.py <official input.zip> --team VIT_tan-x` |
+| Deck placeholders | Slide 7: video link |
+| Final `estimated_trajectory.txt` | Must come from the organisers' evaluation input once it is released. The bundle in `submission/` uses held-out MH_05 (`data/official_ho/MH_05_difficult_o42.zip`) |
 | GitHub repository | Public or shared with the organisers; commit and push the current tree |
-| Demo video | 2-3 minutes, strict maximum 3 minutes, YouTube or Drive link |
-| Presentation | PPT or PDF named `CollegeName_TeamName`, following `CollegeName_TeamName_Submission.pptx`: theme ID, title and team, problem in own words, solution and architecture diagram, tech stack, innovation, results, limitations |
+| AI disclosure | Team's own document |
 | Google Form | One submission per team; the link is announced in the official channel |
 
 ## Open risks (worth asking the organisers)

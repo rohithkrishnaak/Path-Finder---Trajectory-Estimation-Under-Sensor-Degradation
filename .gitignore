@@ -17,4 +17,18 @@ archive/cpp_runtime/pathfinder
 archive/cpp_runtime/pathfinder.exe
 *.o
 # experiment weights (shipped model is src/weights/vel.bin)
-/weights/
+/weights/*
+!/weights/mix/
+/weights/mix/*
+!/weights/mix/ho_ens.bin
+!/weights/la/
+/weights/la/*
+!/weights/la/ho120_ens.bin
+# submission deliverables are committed
+!submission/*.zip
+!VIT_tan-x_Submission.pdf
+# demo intermediates (regenerate with demo/README.md)
+demo/data/
+demo/video/build/
+# webots window state
+*.wbproj
